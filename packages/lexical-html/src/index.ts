@@ -149,9 +149,17 @@ function $appendNodesToHTML(
 
   if (shouldInclude && !shouldExclude) {
     if (isHTMLElement(element) || isDocumentFragment(element)) {
-      element.append(fragment);
+      try {
+        element.appendChild(fragment);
+      } catch (_) {
+        element.append(fragment);
+      }
     }
-    parentElement.append(element);
+    try {
+      parentElement.appendChild(element);
+    } catch (_) {
+      parentElement.append(element);
+    }
 
     if (after) {
       const newElement = after.call(target, element);
@@ -164,7 +172,11 @@ function $appendNodesToHTML(
       }
     }
   } else {
-    parentElement.append(fragment);
+    try {
+      parentElement.appendChild(fragment);
+    } catch (_) {
+      parentElement.append(fragment);
+    }
   }
 
   return shouldInclude;
