@@ -12,6 +12,7 @@ import type {
   MenuTextMatch,
   TriggerFn,
 } from './shared/LexicalMenu';
+import type {JSX} from 'react';
 
 import {useLexicalComposerContext} from '@lexical/react/LexicalComposerContext';
 import {
@@ -21,13 +22,13 @@ import {
   COMMAND_PRIORITY_LOW,
   CommandListenerPriority,
   createCommand,
+  getDOMSelection,
   LexicalCommand,
   LexicalEditor,
   RangeSelection,
   TextNode,
 } from 'lexical';
 import {useCallback, useEffect, useState} from 'react';
-import * as React from 'react';
 import {startTransition} from 'shared/reactPatches';
 
 import {LexicalMenu, MenuOption, useMenuAnchorRef} from './shared/LexicalMenu';
@@ -53,7 +54,7 @@ function tryToPositionRange(
   range: Range,
   editorWindow: Window,
 ): boolean {
-  const domSelection = editorWindow.getSelection();
+  const domSelection = getDOMSelection(editorWindow);
   if (domSelection === null || !domSelection.isCollapsed) {
     return false;
   }
@@ -146,11 +147,22 @@ export const SCROLL_TYPEAHEAD_OPTION_INTO_VIEW_COMMAND: LexicalCommand<{
 
 export function useBasicTypeaheadTriggerMatch(
   trigger: string,
-  {minLength = 1, maxLength = 75}: {minLength?: number; maxLength?: number},
+  {
+    minLength = 1,
+    maxLength = 75,
+    punctuation = PUNCTUATION,
+    allowWhitespace = false,
+  }: {
+    minLength?: number;
+    maxLength?: number;
+    punctuation?: string;
+    allowWhitespace?: boolean;
+  },
 ): TriggerFn {
   return useCallback(
     (text: string) => {
-      const validChars = '[^' + trigger + PUNCTUATION + '\\s]';
+      const validCharsSuffix = allowWhitespace ? '' : '\\s';
+      const validChars = '[^' + trigger + punctuation + validCharsSuffix + ']';
       const TypeaheadTriggerRegex = new RegExp(
         '(^|\\s|\\()(' +
           '[' +
@@ -177,7 +189,7 @@ export function useBasicTypeaheadTriggerMatch(
       }
       return null;
     },
-    [maxLength, minLength, trigger],
+    [allowWhitespace, trigger, punctuation, maxLength, minLength],
   );
 }
 
@@ -197,6 +209,8 @@ export type TypeaheadMenuPluginProps<TOption extends MenuOption> = {
   anchorClassName?: string;
   commandPriority?: CommandListenerPriority;
   parent?: HTMLElement;
+  preselectFirstItem?: boolean;
+  ignoreEntityBoundary?: boolean;
 };
 
 export function LexicalTypeaheadMenuPlugin<TOption extends MenuOption>({
@@ -210,6 +224,8 @@ export function LexicalTypeaheadMenuPlugin<TOption extends MenuOption>({
   anchorClassName,
   commandPriority = COMMAND_PRIORITY_LOW,
   parent,
+  preselectFirstItem = true,
+  ignoreEntityBoundary = false,
 }: TypeaheadMenuPluginProps<TOption>): JSX.Element | null {
   const [editor] = useLexicalComposerContext();
   const [resolution, setResolution] = useState<MenuResolution | null>(null);
@@ -240,6 +256,12 @@ export function LexicalTypeaheadMenuPlugin<TOption extends MenuOption>({
   useEffect(() => {
     const updateListener = () => {
       editor.getEditorState().read(() => {
+        // Check if editor is in read-only mode
+        if (!editor.isEditable()) {
+          closeTypeahead();
+          return;
+        }
+
         const editorWindow = editor._window || window;
         const range = editorWindow.document.createRange();
         const selection = $getSelection();
@@ -260,7 +282,8 @@ export function LexicalTypeaheadMenuPlugin<TOption extends MenuOption>({
 
         if (
           match !== null &&
-          !isSelectionOnEntityBoundary(editor, match.leadOffset)
+          (ignoreEntityBoundary ||
+            !isSelectionOnEntityBoundary(editor, match.leadOffset))
         ) {
           const isRangePositioned = tryToPositionRange(
             match.leadOffset,
@@ -293,9 +316,22 @@ export function LexicalTypeaheadMenuPlugin<TOption extends MenuOption>({
     resolution,
     closeTypeahead,
     openTypeahead,
+    ignoreEntityBoundary,
   ]);
 
-  return resolution === null || editor === null ? null : (
+  useEffect(
+    () =>
+      editor.registerEditableListener((isEditable) => {
+        if (!isEditable) {
+          closeTypeahead();
+        }
+      }),
+    [editor, closeTypeahead],
+  );
+
+  return resolution === null ||
+    editor === null ||
+    anchorElementRef.current === null ? null : (
     <LexicalMenu
       close={closeTypeahead}
       resolution={resolution}
@@ -306,6 +342,7 @@ export function LexicalTypeaheadMenuPlugin<TOption extends MenuOption>({
       shouldSplitNodeWithQuery={true}
       onSelectOption={onSelectOption}
       commandPriority={commandPriority}
+      preselectFirstItem={preselectFirstItem}
     />
   );
 }

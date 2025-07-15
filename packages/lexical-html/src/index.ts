@@ -29,6 +29,7 @@ import {
   $isTextNode,
   ArtificialNode__DO_NOT_USE,
   ElementNode,
+  getRegisteredNode,
   isDocumentFragment,
   isInlineDomNode,
 } from 'lexical';
@@ -59,7 +60,7 @@ export function $generateNodesFromDOM(
       }
     }
   }
-  $unwrapArtificalNodes(allArtificialNodes);
+  $unwrapArtificialNodes(allArtificialNodes);
 
   return lexicalNodes;
 }
@@ -110,7 +111,7 @@ function $appendNodesToHTML(
     target = clone;
   }
   const children = $isElementNode(target) ? target.getChildren() : [];
-  const registeredNode = editor._nodes.get(target.getType());
+  const registeredNode = getRegisteredNode(editor, target.getType());
   let exportOutput;
 
   // Use HTMLConfig overrides, if available.
@@ -198,7 +199,9 @@ function getConversionFunction(
       if (
         domConversion !== null &&
         (currentConversion === null ||
-          (currentConversion.priority || 0) < (domConversion.priority || 0))
+          // Given equal priority, prefer the last registered importer
+          // which is typically an application custom node or HTMLConfig['import']
+          (currentConversion.priority || 0) <= (domConversion.priority || 0))
       ) {
         currentConversion = domConversion;
       }
@@ -365,7 +368,7 @@ function wrapContinuousInlines(
   return out;
 }
 
-function $unwrapArtificalNodes(
+function $unwrapArtificialNodes(
   allArtificialNodes: Array<ArtificialNode__DO_NOT_USE>,
 ) {
   for (const node of allArtificialNodes) {

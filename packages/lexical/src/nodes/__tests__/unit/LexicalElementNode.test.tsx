@@ -7,10 +7,13 @@
  */
 
 import {
+  $applyNodeReplacement,
   $createTextNode,
   $getRoot,
   $getSelection,
   $isRangeSelection,
+  createEditor,
+  ElementDOMSlot,
   ElementNode,
   LexicalEditor,
   LexicalNode,
@@ -25,6 +28,7 @@ import {
   $createTestElementNode,
   createTestEditor,
 } from '../../../__tests__/utils';
+import {indexPath, SerializedElementNode} from '../../LexicalElementNode';
 
 describe('LexicalElementNode tests', () => {
   let container: HTMLElement;
@@ -97,7 +101,7 @@ describe('LexicalElementNode tests', () => {
         // If you broke this test, you changed the public interface of a
         // serialized Lexical Core Node. Please ensure the correct adapter
         // logic is in place in the corresponding importJSON  method
-        // to accomodate these changes.
+        // to accommodate these changes.
 
         expect(node.exportJSON()).toStrictEqual({
           children: [],
@@ -631,5 +635,122 @@ describe('LexicalElementNode tests', () => {
         });
       });
     });
+  });
+});
+
+describe('getDOMSlot tests', () => {
+  let container: HTMLElement;
+  let editor: LexicalEditor;
+
+  beforeEach(async () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    editor = createEditor({
+      nodes: [WrapperElementNode],
+      onError: (error) => {
+        throw error;
+      },
+    });
+    editor.setRootElement(container);
+  });
+
+  afterEach(() => {
+    document.body.removeChild(container);
+    // @ts-ignore
+    container = null;
+  });
+
+  class WrapperElementNode extends ElementNode {
+    static getType() {
+      return 'wrapper';
+    }
+    static clone(node: WrapperElementNode): WrapperElementNode {
+      return new WrapperElementNode(node.__key);
+    }
+    createDOM() {
+      const el = document.createElement('main');
+      el.appendChild(document.createElement('section'));
+      return el;
+    }
+    updateDOM() {
+      return false;
+    }
+    getDOMSlot(dom: HTMLElement): ElementDOMSlot {
+      return super.getDOMSlot(dom).withElement(dom.querySelector('section')!);
+    }
+    exportJSON(): SerializedElementNode {
+      throw new Error('Not implemented');
+    }
+    static importJSON(): WrapperElementNode {
+      throw new Error('Not implemented');
+    }
+  }
+  function $createWrapperElementNode(): WrapperElementNode {
+    return $applyNodeReplacement(new WrapperElementNode());
+  }
+
+  test('can create wrapper', () => {
+    let wrapper: WrapperElementNode;
+    editor.update(
+      () => {
+        wrapper = $createWrapperElementNode().append(
+          $createTextNode('test text').setMode('token'),
+        );
+        $getRoot().clear().append(wrapper);
+      },
+      {discrete: true},
+    );
+    expect(container.innerHTML).toBe(
+      `<main dir="ltr"><section><span data-lexical-text="true">test text</span></section></main>`,
+    );
+    editor.update(
+      () => {
+        wrapper.append($createTextNode('more text').setMode('token'));
+      },
+      {discrete: true},
+    );
+    expect(container.innerHTML).toBe(
+      `<main dir="ltr"><section><span data-lexical-text="true">test text</span><span data-lexical-text="true">more text</span></section></main>`,
+    );
+    editor.update(
+      () => {
+        wrapper.clear();
+      },
+      {discrete: true},
+    );
+    expect(container.innerHTML).toBe(`<main><section><br></section></main>`);
+  });
+});
+
+describe('indexPath', () => {
+  test('no path', () => {
+    const root = document.createElement('div');
+    expect(indexPath(root, root)).toEqual([]);
+  });
+  test('only child', () => {
+    const root = document.createElement('div');
+    const child = document.createElement('div');
+    root.appendChild(child);
+    expect(indexPath(root, child)).toEqual([0]);
+  });
+  test('nested child', () => {
+    const root = document.createElement('div');
+    const parent = document.createElement('div');
+    const child = document.createElement('div');
+    root.appendChild(parent);
+    parent.appendChild(child);
+    expect(indexPath(root, child)).toEqual([0, 0]);
+  });
+  test('nested child with siblings', () => {
+    const root = document.createElement('div');
+    const parent = document.createElement('div');
+    const child = document.createElement('div');
+    root.appendChild(document.createElement('span'));
+    root.appendChild(parent);
+    root.appendChild(document.createElement('span'));
+    parent.appendChild(document.createElement('span'));
+    parent.appendChild(child);
+    parent.appendChild(document.createElement('span'));
+    expect(indexPath(root, child)).toEqual([1, 1]);
   });
 });

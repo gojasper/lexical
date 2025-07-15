@@ -10,6 +10,7 @@ import {expect, test as base} from '@playwright/test';
 import * as glob from 'glob';
 import {randomUUID} from 'node:crypto';
 import prettier from 'prettier';
+import * as lockfile from 'proper-lockfile';
 import {URLSearchParams} from 'url';
 
 import {selectAll} from '../keyboardShortcuts/index.mjs';
@@ -33,6 +34,8 @@ export const IS_COLLAB =
 const IS_RICH_TEXT = process.env.E2E_EDITOR_MODE !== 'plain-text';
 const IS_PLAIN_TEXT = process.env.E2E_EDITOR_MODE === 'plain-text';
 export const LEGACY_EVENTS = process.env.E2E_EVENTS_MODE === 'legacy-events';
+export const IS_TABLE_HORIZONTAL_SCROLL =
+  process.env.E2E_TABLE_MODE !== 'legacy';
 export const SAMPLE_IMAGE_URL =
   E2E_PORT === 3000
     ? '/src/images/yellow-flower.jpg'
@@ -51,6 +54,21 @@ function wrapAndSlowDown(method, delay) {
   };
 }
 
+export function wrapTableHtml(expected, {ignoreClasses = false} = {}) {
+  return html`
+    ${expected
+      .replace(
+        /<table/g,
+        `<div${
+          ignoreClasses
+            ? ''
+            : ' class="PlaygroundEditorTheme__tableScrollableWrapper"'
+        }><table`,
+      )
+      .replace(/<\/table>/g, '</table></div>')}
+  `;
+}
+
 export async function initialize({
   page,
   isCollab,
@@ -63,6 +81,9 @@ export async function initialize({
   tableCellMerge,
   tableCellBackgroundColor,
   shouldUseLexicalContextMenu,
+  tableHorizontalScroll,
+  shouldAllowHighlightingWithBrackets,
+  selectionAlwaysOnDisplay,
 }) {
   // Tests with legacy events often fail to register keypress, so
   // slowing it down to reduce flakiness
@@ -75,6 +96,8 @@ export async function initialize({
   appSettings.isRichText = IS_RICH_TEXT;
   appSettings.emptyEditor = true;
   appSettings.disableBeforeInput = LEGACY_EVENTS;
+  appSettings.tableHorizontalScroll =
+    tableHorizontalScroll ?? IS_TABLE_HORIZONTAL_SCROLL;
   if (isCollab) {
     appSettings.isCollab = isCollab;
     appSettings.collabId = randomUUID();
@@ -94,6 +117,11 @@ export async function initialize({
     appSettings.tableCellBackgroundColor = tableCellBackgroundColor;
   }
   appSettings.shouldUseLexicalContextMenu = !!shouldUseLexicalContextMenu;
+
+  appSettings.shouldAllowHighlightingWithBrackets =
+    !!shouldAllowHighlightingWithBrackets;
+
+  appSettings.selectionAlwaysOnDisplay = !!selectionAlwaysOnDisplay;
 
   const urlParams = appSettingsToURLParams(appSettings);
   const url = `http://localhost:${E2E_PORT}/${
@@ -150,6 +178,8 @@ export const test = base.extend({
   isPlainText: IS_PLAIN_TEXT,
   isRichText: IS_RICH_TEXT,
   legacyEvents: LEGACY_EVENTS,
+  selectionAlwaysOnDisplay: false,
+  shouldAllowHighlightingWithBrackets: false,
   shouldUseLexicalContextMenu: false,
 });
 
@@ -174,6 +204,16 @@ export async function clickSelectors(page, selectors) {
     await click(page, selectors[i]);
   }
 }
+
+function removeSafariLinebreakImgHack(actualHtml) {
+  return E2E_BROWSER === 'webkit'
+    ? actualHtml.replaceAll(
+        /<img (?:[^>]+ )?data-lexical-linebreak="true"(?: [^>]+)?>/g,
+        '',
+      )
+    : actualHtml;
+}
+
 /**
  * @param {import('@playwright/test').Page | import('@playwright/test').Frame} pageOrFrame
  */
@@ -185,27 +225,47 @@ async function assertHTMLOnPageOrFrame(
   frameName,
   actualHtmlModificationsCallback = (actualHtml) => actualHtml,
 ) {
-  const expected = prettifyHTML(expectedHtml.replace(/\n/gm, ''), {
+  const expected = await prettifyHTML(expectedHtml.replace(/\n/gm, ''), {
     ignoreClasses,
     ignoreInlineStyles,
   });
   return await expect(async () => {
-    const actualHtml = await pageOrFrame
-      .locator('div[contenteditable="true"]')
-      .first()
-      .innerHTML();
-    let actual = prettifyHTML(actualHtml.replace(/\n/gm, ''), {
+    const actualHtml = removeSafariLinebreakImgHack(
+      await pageOrFrame
+        .locator('div[contenteditable="true"]')
+        .first()
+        .innerHTML(),
+    );
+    let actual = await prettifyHTML(actualHtml.replace(/\n/gm, ''), {
       ignoreClasses,
       ignoreInlineStyles,
     });
 
-    actual = actualHtmlModificationsCallback(actual);
+    actual = await actualHtmlModificationsCallback(actual);
 
     expect(
       actual,
       `innerHTML of contenteditable in ${frameName} did not match`,
     ).toEqual(expected);
   }).toPass({intervals: [100, 250, 500], timeout: 5000});
+}
+
+/**
+ * @function
+ * @template T
+ * @param {() => T | Promise<T>}
+ * @returns {Promise<T>}
+ */
+export async function withExclusiveClipboardAccess(f) {
+  const release = await lockfile.lock('.', {
+    lockfilePath: '.playwright-clipboard.lock',
+    retries: 5,
+  });
+  try {
+    return f();
+  } finally {
+    await release();
+  }
 }
 
 /**
@@ -251,6 +311,30 @@ export async function assertHTML(
 
 /**
  * @param {import('@playwright/test').Page} page
+ */
+export async function assertTableHTML(
+  page,
+  expectedHtml,
+  expectedHtmlFrameRight = undefined,
+  options = undefined,
+  ...args
+) {
+  return await assertHTML(
+    page,
+    IS_TABLE_HORIZONTAL_SCROLL
+      ? wrapTableHtml(expectedHtml, options)
+      : expectedHtml,
+    IS_TABLE_HORIZONTAL_SCROLL && expectedHtmlFrameRight !== undefined
+      ? wrapTableHtml(expectedHtmlFrameRight, options)
+      : expectedHtmlFrameRight,
+    options,
+    ...args,
+  );
+}
+
+/**
+ * @param {import('@playwright/test').Page} page
+ * @returns {import('@playwright/test').Page | import('@playwright/test').Frame}
  */
 export function getPageOrFrame(page) {
   return IS_COLLAB ? page.frame('left') : page;
@@ -319,16 +403,33 @@ async function assertSelectionOnPageOrFrame(page, expected) {
       return path.reverse();
     };
 
+    const fixOffset = (node, offset) => {
+      // If the selection offset is at the br of a webkit img+br linebreak
+      // then move the offset to the img so the tests are consistent across
+      // browsers
+      if (node && node.nodeType === Node.ELEMENT_NODE && offset > 0) {
+        const child = node.children[offset - 1];
+        if (
+          child &&
+          child.nodeType === Node.ELEMENT_NODE &&
+          child.getAttribute('data-lexical-linebreak') === 'true'
+        ) {
+          return offset - 1;
+        }
+      }
+      return offset;
+    };
+
     const {anchorNode, anchorOffset, focusNode, focusOffset} =
       window.getSelection();
 
     return {
-      anchorOffset,
+      anchorOffset: fixOffset(anchorNode, anchorOffset),
       anchorPath: getPathFromNode(anchorNode),
-      focusOffset,
+      focusOffset: fixOffset(focusNode, focusOffset),
       focusPath: getPathFromNode(focusNode),
     };
-  }, expected);
+  });
   expect(selection.anchorPath).toEqual(expected.anchorPath);
   expect(selection.focusPath).toEqual(expected.focusPath);
   if (Array.isArray(expected.anchorOffset)) {
@@ -424,6 +525,7 @@ export async function copyToClipboard(page) {
 async function pasteWithClipboardDataFromPageOrFrame(
   pageOrFrame,
   clipboardData,
+  editorSelector,
 ) {
   const canUseBeforeInput = await supportsBeforeInput(pageOrFrame);
   await pageOrFrame.evaluate(
@@ -462,7 +564,10 @@ async function pasteWithClipboardDataFromPageOrFrame(
         };
       }
 
-      const editor = document.querySelector('div[contenteditable="true"]');
+      const editor =
+        document.activeElement && document.activeElement.isContentEditable
+          ? document.activeElement
+          : document.querySelector(editorSelector);
       const pasteEvent = new ClipboardEvent('paste', {
         bubbles: true,
         cancelable: true,
@@ -494,7 +599,11 @@ async function pasteWithClipboardDataFromPageOrFrame(
 /**
  * @param {import('@playwright/test').Page} page
  */
-export async function pasteFromClipboard(page, clipboardData) {
+export async function pasteFromClipboard(
+  page,
+  clipboardData,
+  editorSelector = 'div[contenteditable="true"]',
+) {
   if (clipboardData === undefined) {
     await keyDownCtrlOrMeta(page);
     await page.keyboard.press('v');
@@ -504,6 +613,7 @@ export async function pasteFromClipboard(page, clipboardData) {
   await pasteWithClipboardDataFromPageOrFrame(
     getPageOrFrame(page),
     clipboardData,
+    editorSelector,
   );
 }
 
@@ -656,11 +766,15 @@ export async function dragMouse(
   page,
   fromBoundingBox,
   toBoundingBox,
-  positionStart = 'middle',
-  positionEnd = 'middle',
-  mouseUp = true,
-  slow = false,
+  opts = {},
 ) {
+  const {
+    positionStart = 'middle',
+    positionEnd = 'middle',
+    mouseDown = true,
+    mouseUp = true,
+    slow = false,
+  } = opts;
   let fromX = fromBoundingBox.x;
   let fromY = fromBoundingBox.y;
   if (positionStart === 'middle') {
@@ -670,9 +784,6 @@ export async function dragMouse(
     fromX += fromBoundingBox.width;
     fromY += fromBoundingBox.height;
   }
-  await page.mouse.move(fromX, fromY);
-  await page.mouse.down();
-
   let toX = toBoundingBox.x;
   let toY = toBoundingBox.y;
   if (positionEnd === 'middle') {
@@ -683,13 +794,11 @@ export async function dragMouse(
     toY += toBoundingBox.height;
   }
 
-  if (slow) {
-    //simulate more than 1 mouse move event to replicate human slow dragging
-    await page.mouse.move((fromX + toX) / 2, (fromY + toY) / 2);
+  await page.mouse.move(fromX, fromY);
+  if (mouseDown) {
+    await page.mouse.down();
   }
-
-  await page.mouse.move(toX, toY);
-
+  await page.mouse.move(toX, toY, slow ? 10 : 1);
   if (mouseUp) {
     await page.mouse.up();
   }
@@ -705,12 +814,14 @@ export async function dragImage(
     page,
     await selectorBoundingBox(page, '.editor-image img'),
     await selectorBoundingBox(page, toSelector),
-    positionStart,
-    positionEnd,
+    {positionEnd, positionStart},
   );
 }
 
-export function prettifyHTML(string, {ignoreClasses, ignoreInlineStyles} = {}) {
+export async function prettifyHTML(
+  string,
+  {ignoreClasses, ignoreInlineStyles} = {},
+) {
   let output = string;
 
   if (ignoreClasses) {
@@ -723,15 +834,14 @@ export function prettifyHTML(string, {ignoreClasses, ignoreInlineStyles} = {}) {
 
   output = output.replace(/\s__playwright_target__="[^"]+"/, '');
 
-  return prettier
-    .format(output, {
-      attributeGroups: ['$DEFAULT', '^data-'],
-      attributeSort: 'ASC',
-      bracketSameLine: true,
-      htmlWhitespaceSensitivity: 'ignore',
-      parser: 'html',
-    })
-    .trim();
+  return await prettier.format(output, {
+    attributeGroups: ['$DEFAULT', '^data-'],
+    attributeSort: 'asc',
+    bracketSameLine: true,
+    htmlWhitespaceSensitivity: 'ignore',
+    parser: 'html',
+    plugins: ['prettier-plugin-organize-attributes'],
+  });
 }
 
 // This function does not suppose to do anything, it's only used as a trigger
@@ -816,6 +926,20 @@ export async function insertCollapsible(page) {
   await selectFromInsertDropdown(page, '.item .caret-right');
 }
 
+export async function selectCellFromTableCoord(page, coord, isHeader = false) {
+  const leftFrame = getPageOrFrame(page);
+  if (IS_COLLAB) {
+    await focusEditor(page);
+  }
+
+  const cell = await leftFrame.locator(
+    `table:first-of-type > :nth-match(tr, ${coord.y + 1}) > ${
+      isHeader ? 'th' : 'td'
+    }:nth-child(${coord.x + 1})`,
+  );
+  await cell.click();
+}
+
 export async function selectCellsFromTableCords(
   page,
   firstCords,
@@ -839,72 +963,80 @@ export async function selectCellsFromTableCords(
     }:nth-child(${secondCords.x + 1})`,
   );
 
-  // Focus on inside the iFrame or the boundingBox() below returns null.
   await firstRowFirstColumnCell.click();
+  await page.keyboard.down('Shift');
+  await secondRowSecondCell.click();
+  await page.keyboard.up('Shift');
 
-  await dragMouse(
+  // const firstBox = await firstRowFirstColumnCell.boundingBox();
+  // const secondBox = await secondRowSecondCell.boundingBox();
+  // await dragMouse(page, firstBox, secondBox, {slow: true});
+}
+
+export async function clickTableCellActiveButton(page) {
+  await click(
     page,
-    await firstRowFirstColumnCell.boundingBox(),
-    await secondRowSecondCell.boundingBox(),
-    'middle',
-    'middle',
-    true,
-    true,
+    '.table-cell-action-button-container--active > .table-cell-action-button',
   );
 }
 
 export async function insertTableRowAbove(page) {
-  await click(page, '.table-cell-action-button-container');
+  await clickTableCellActiveButton(page);
   await click(page, '.item[data-test-id="table-insert-row-above"]');
 }
 
 export async function insertTableRowBelow(page) {
-  await click(page, '.table-cell-action-button-container');
+  await clickTableCellActiveButton(page);
   await click(page, '.item[data-test-id="table-insert-row-below"]');
 }
 
 export async function insertTableColumnBefore(page) {
-  await click(page, '.table-cell-action-button-container');
+  await clickTableCellActiveButton(page);
   await click(page, '.item[data-test-id="table-insert-column-before"]');
 }
 
 export async function insertTableColumnAfter(page) {
-  await click(page, '.table-cell-action-button-container');
+  await clickTableCellActiveButton(page);
   await click(page, '.item[data-test-id="table-insert-column-after"]');
 }
 
 export async function mergeTableCells(page) {
-  await click(page, '.table-cell-action-button-container');
+  await clickTableCellActiveButton(page);
   await click(page, '.item[data-test-id="table-merge-cells"]');
 }
 
 export async function unmergeTableCell(page) {
-  await click(page, '.table-cell-action-button-container');
+  await clickTableCellActiveButton(page);
   await click(page, '.item[data-test-id="table-unmerge-cells"]');
 }
 
 export async function toggleColumnHeader(page) {
-  await click(page, '.table-cell-action-button-container');
+  await clickTableCellActiveButton(page);
   await click(page, '.item[data-test-id="table-column-header"]');
 }
 
+export async function toggleRowHeader(page) {
+  await clickTableCellActiveButton(page);
+  await click(page, '.item[data-test-id="table-row-header"]');
+}
+
 export async function deleteTableRows(page) {
-  await click(page, '.table-cell-action-button-container');
+  await clickTableCellActiveButton(page);
   await click(page, '.item[data-test-id="table-delete-rows"]');
 }
 
 export async function deleteTableColumns(page) {
-  await click(page, '.table-cell-action-button-container');
+  await clickTableCellActiveButton(page);
   await click(page, '.item[data-test-id="table-delete-columns"]');
 }
 
 export async function deleteTable(page) {
-  await click(page, '.table-cell-action-button-container');
+  await clickTableCellActiveButton(page);
   await click(page, '.item[data-test-id="table-delete"]');
 }
 
 export async function setBackgroundColor(page) {
-  await click(page, '.table-cell-action-button-container');
+  await clickTableCellActiveButton(page);
   await click(page, '.item[data-test-id="table-background-color"]');
 }
 
@@ -956,8 +1088,7 @@ export async function dragDraggableMenuTo(
     page,
     await selectorBoundingBox(page, '.draggable-block-menu'),
     await selectorBoundingBox(page, toSelector),
-    positionStart,
-    positionEnd,
+    {positionEnd, positionStart},
   );
 }
 
