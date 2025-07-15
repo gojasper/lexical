@@ -6,6 +6,8 @@
  *
  */
 
+import type {JSX} from 'react';
+
 import {useLexicalComposerContext} from '@lexical/react/LexicalComposerContext';
 import {eventFiles} from '@lexical/rich-text';
 import {calculateZoomLevel, isHTMLElement, mergeRegister} from '@lexical/utils';
@@ -22,6 +24,7 @@ import {
 import {
   DragEvent as ReactDragEvent,
   ReactNode,
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -200,7 +203,8 @@ function setMenuPosition(
   const top =
     targetRect.top +
     (targetCalculateHeight - floatingElemRect.height) / 2 -
-    anchorElementRect.top;
+    anchorElementRect.top +
+    anchorElem.scrollTop;
 
   const left = SPACE;
 
@@ -241,7 +245,8 @@ function setTargetLine(
     lineTop -= marginTop / 2;
   }
 
-  const top = lineTop - anchorTop - TARGET_LINE_HALF_HEIGHT;
+  const top =
+    lineTop - anchorTop - TARGET_LINE_HALF_HEIGHT + anchorElem.scrollTop;
   const left = TEXT_BOX_HORIZONTAL_PADDING - SPACE;
 
   targetLineElem.style.transform = `translate(${left}px, ${top}px)`;
@@ -261,18 +266,29 @@ function hideTargetLine(targetLineElem: HTMLElement | null) {
 function useDraggableBlockMenu(
   editor: LexicalEditor,
   anchorElem: HTMLElement,
-  menuRef: React.RefObject<HTMLElement>,
-  targetLineRef: React.RefObject<HTMLElement>,
+  menuRef: React.RefObject<HTMLElement | null>,
+  targetLineRef: React.RefObject<HTMLElement | null>,
   isEditable: boolean,
   menuComponent: ReactNode,
   targetLineComponent: ReactNode,
   isOnMenu: (element: HTMLElement) => boolean,
+  onElementChanged?: (element: HTMLElement | null) => void,
 ): JSX.Element {
   const scrollerElem = anchorElem.parentElement;
 
   const isDraggingBlockRef = useRef<boolean>(false);
-  const [draggableBlockElem, setDraggableBlockElem] =
+  const [draggableBlockElem, setDraggableBlockElemState] =
     useState<HTMLElement | null>(null);
+
+  const setDraggableBlockElem = useCallback(
+    (elem: HTMLElement | null) => {
+      setDraggableBlockElemState(elem);
+      if (onElementChanged) {
+        onElementChanged(elem);
+      }
+    },
+    [onElementChanged],
+  );
 
   useEffect(() => {
     function onMouseMove(event: MouseEvent) {
@@ -306,7 +322,7 @@ function useDraggableBlockMenu(
         scrollerElem.removeEventListener('mouseleave', onMouseLeave);
       }
     };
-  }, [scrollerElem, anchorElem, editor, isOnMenu]);
+  }, [scrollerElem, anchorElem, editor, isOnMenu, setDraggableBlockElem]);
 
   useEffect(() => {
     if (menuRef.current) {
@@ -399,7 +415,7 @@ function useDraggableBlockMenu(
         COMMAND_PRIORITY_HIGH,
       ),
     );
-  }, [anchorElem, editor, targetLineRef]);
+  }, [anchorElem, editor, targetLineRef, setDraggableBlockElem]);
 
   function onDragStart(event: ReactDragEvent<HTMLDivElement>): void {
     const dataTransfer = event.dataTransfer;
@@ -440,13 +456,15 @@ export function DraggableBlockPlugin_EXPERIMENTAL({
   menuComponent,
   targetLineComponent,
   isOnMenu,
+  onElementChanged,
 }: {
   anchorElem?: HTMLElement;
-  menuRef: React.RefObject<HTMLElement>;
-  targetLineRef: React.RefObject<HTMLElement>;
+  menuRef: React.RefObject<HTMLElement | null>;
+  targetLineRef: React.RefObject<HTMLElement | null>;
   menuComponent: ReactNode;
   targetLineComponent: ReactNode;
   isOnMenu: (element: HTMLElement) => boolean;
+  onElementChanged?: (element: HTMLElement | null) => void;
 }): JSX.Element {
   const [editor] = useLexicalComposerContext();
   return useDraggableBlockMenu(
@@ -458,5 +476,6 @@ export function DraggableBlockPlugin_EXPERIMENTAL({
     menuComponent,
     targetLineComponent,
     isOnMenu,
+    onElementChanged,
   );
 }

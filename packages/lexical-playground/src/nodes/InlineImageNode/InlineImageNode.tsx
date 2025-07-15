@@ -13,12 +13,18 @@ import type {
   EditorConfig,
   LexicalEditor,
   LexicalNode,
+  LexicalUpdateJSON,
   NodeKey,
   SerializedEditor,
   SerializedLexicalNode,
   Spread,
 } from 'lexical';
+import type {JSX} from 'react';
 
+import {
+  addClassNamesToElement,
+  removeClassNamesFromElement,
+} from '@lexical/utils';
 import {
   $applyNodeReplacement,
   createEditor,
@@ -26,7 +32,6 @@ import {
   isHTMLElement,
 } from 'lexical';
 import * as React from 'react';
-import {Suspense} from 'react';
 
 const InlineImageComponent = React.lazy(() => import('./InlineImageComponent'));
 
@@ -71,6 +76,10 @@ export type SerializedInlineImageNode = Spread<
   SerializedLexicalNode
 >;
 
+function getPositionClass(position: Position | undefined): string | undefined {
+  return typeof position === 'string' ? `position-${position}` : undefined;
+}
+
 export class InlineImageNode extends DecoratorNode<JSX.Element> {
   __src: string;
   __altText: string;
@@ -100,16 +109,22 @@ export class InlineImageNode extends DecoratorNode<JSX.Element> {
   static importJSON(
     serializedNode: SerializedInlineImageNode,
   ): InlineImageNode {
-    const {altText, height, width, caption, src, showCaption, position} =
-      serializedNode;
-    const node = $createInlineImageNode({
+    const {altText, height, width, src, showCaption, position} = serializedNode;
+    return $createInlineImageNode({
       altText,
       height,
       position,
       showCaption,
       src,
       width,
-    });
+    }).updateFromJSON(serializedNode);
+  }
+
+  updateFromJSON(
+    serializedNode: LexicalUpdateJSON<SerializedInlineImageNode>,
+  ): this {
+    const {caption} = serializedNode;
+    const node = super.updateFromJSON(serializedNode);
     const nestedEditor = node.__caption;
     const editorState = nestedEditor.parseEditorState(caption.editorState);
     if (!editorState.isEmpty()) {
@@ -158,14 +173,13 @@ export class InlineImageNode extends DecoratorNode<JSX.Element> {
 
   exportJSON(): SerializedInlineImageNode {
     return {
+      ...super.exportJSON(),
       altText: this.getAltText(),
       caption: this.__caption.toJSON(),
       height: this.__height === 'inherit' ? 0 : this.__height,
       position: this.__position,
       showCaption: this.__showCaption,
       src: this.getSrc(),
-      type: 'inline-image',
-      version: 1,
       width: this.__width === 'inherit' ? 0 : this.__width,
     };
   }
@@ -228,9 +242,13 @@ export class InlineImageNode extends DecoratorNode<JSX.Element> {
 
   createDOM(config: EditorConfig): HTMLElement {
     const span = document.createElement('span');
-    const className = `${config.theme.inlineImage} position-${this.__position}`;
-    if (className !== undefined) {
-      span.className = className;
+    for (const cls of [
+      config.theme.inlineImage,
+      getPositionClass(this.__position),
+    ]) {
+      if (cls) {
+        addClassNamesToElement(span, cls);
+      }
     }
     return span;
   }
@@ -238,28 +256,24 @@ export class InlineImageNode extends DecoratorNode<JSX.Element> {
   updateDOM(prevNode: this, dom: HTMLElement, config: EditorConfig): false {
     const position = this.__position;
     if (position !== prevNode.__position) {
-      const className = `${config.theme.inlineImage} position-${position}`;
-      if (className !== undefined) {
-        dom.className = className;
-      }
+      removeClassNamesFromElement(dom, getPositionClass(prevNode.__position));
+      addClassNamesToElement(dom, getPositionClass(position));
     }
     return false;
   }
 
   decorate(): JSX.Element {
     return (
-      <Suspense fallback={null}>
-        <InlineImageComponent
-          src={this.__src}
-          altText={this.__altText}
-          width={this.__width}
-          height={this.__height}
-          nodeKey={this.getKey()}
-          showCaption={this.__showCaption}
-          caption={this.__caption}
-          position={this.__position}
-        />
-      </Suspense>
+      <InlineImageComponent
+        src={this.__src}
+        altText={this.__altText}
+        width={this.__width}
+        height={this.__height}
+        nodeKey={this.getKey()}
+        showCaption={this.__showCaption}
+        caption={this.__caption}
+        position={this.__position}
+      />
     );
   }
 }

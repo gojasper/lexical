@@ -33,7 +33,7 @@ export class AutocompleteNode extends TextNode {
    * - Ensures max one Autocomplete node per session.
    * - Ensure that when collaboration is enabled, this node is not shown in
    *   other sessions.
-   * See https://github.com/facebook/lexical/blob/master/packages/lexical-playground/src/plugins/AutocompletePlugin/index.tsx#L39
+   * See https://github.com/facebook/lexical/blob/main/packages/lexical-playground/src/plugins/AutocompletePlugin/index.tsx
    */
   __uuid: string;
 
@@ -45,26 +45,24 @@ export class AutocompleteNode extends TextNode {
     return 'autocomplete';
   }
 
+  static importDOM() {
+    // Never import from DOM
+    return null;
+  }
+
   static importJSON(
     serializedNode: SerializedAutocompleteNode,
   ): AutocompleteNode {
-    const node = $createAutocompleteNode(
+    return $createAutocompleteNode(
       serializedNode.text,
       serializedNode.uuid,
-    );
-    node.setFormat(serializedNode.format);
-    node.setDetail(serializedNode.detail);
-    node.setMode(serializedNode.mode);
-    node.setStyle(serializedNode.style);
-    return node;
+    ).updateFromJSON(serializedNode);
   }
 
   exportJSON(): SerializedAutocompleteNode {
     return {
       ...super.exportJSON(),
-      type: 'autocomplete',
       uuid: this.__uuid,
-      version: 1,
     };
   }
 

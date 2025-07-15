@@ -16,6 +16,7 @@ import type {
   LexicalCommand,
   LexicalEditor,
   LexicalNode,
+  LexicalUpdateJSON,
   NodeKey,
   ParagraphNode,
   PasteCommandType,
@@ -93,6 +94,7 @@ import {
   KEY_TAB_COMMAND,
   OUTDENT_CONTENT_COMMAND,
   PASTE_COMMAND,
+  PASTE_TAG,
   REMOVE_TEXT_COMMAND,
   SELECT_ALL_COMMAND,
   setNodeIndentFromDOM,
@@ -128,10 +130,6 @@ export class QuoteNode extends ElementNode {
     return new QuoteNode(node.__key);
   }
 
-  constructor(key?: NodeKey) {
-    super(key);
-  }
-
   // View
 
   createDOM(config: EditorConfig): HTMLElement {
@@ -161,7 +159,9 @@ export class QuoteNode extends ElementNode {
       }
 
       const formatType = this.getFormatType();
-      element.style.textAlign = formatType;
+      if (formatType) {
+        element.style.textAlign = formatType;
+      }
 
       const direction = this.getDirection();
       if (direction) {
@@ -175,18 +175,7 @@ export class QuoteNode extends ElementNode {
   }
 
   static importJSON(serializedNode: SerializedQuoteNode): QuoteNode {
-    const node = $createQuoteNode();
-    node.setFormat(serializedNode.format);
-    node.setIndent(serializedNode.indent);
-    node.setDirection(serializedNode.direction);
-    return node;
-  }
-
-  exportJSON(): SerializedElementNode {
-    return {
-      ...super.exportJSON(),
-      type: 'quote',
-    };
+    return $createQuoteNode().updateFromJSON(serializedNode);
   }
 
   // Mutation
@@ -246,6 +235,12 @@ export class HeadingNode extends ElementNode {
     return this.__tag;
   }
 
+  setTag(tag: HeadingTagType): this {
+    const self = this.getWritable();
+    this.__tag = tag;
+    return self;
+  }
+
   // View
 
   createDOM(config: EditorConfig): HTMLElement {
@@ -260,8 +255,8 @@ export class HeadingNode extends ElementNode {
     return element;
   }
 
-  updateDOM(prevNode: this, dom: HTMLElement): boolean {
-    return false;
+  updateDOM(prevNode: this, dom: HTMLElement, config: EditorConfig): boolean {
+    return prevNode.__tag !== this.__tag;
   }
 
   static importDOM(): DOMConversionMap | null {
@@ -327,7 +322,9 @@ export class HeadingNode extends ElementNode {
       }
 
       const formatType = this.getFormatType();
-      element.style.textAlign = formatType;
+      if (formatType) {
+        element.style.textAlign = formatType;
+      }
 
       const direction = this.getDirection();
       if (direction) {
@@ -341,19 +338,21 @@ export class HeadingNode extends ElementNode {
   }
 
   static importJSON(serializedNode: SerializedHeadingNode): HeadingNode {
-    const node = $createHeadingNode(serializedNode.tag);
-    node.setFormat(serializedNode.format);
-    node.setIndent(serializedNode.indent);
-    node.setDirection(serializedNode.direction);
-    return node;
+    return $createHeadingNode(serializedNode.tag).updateFromJSON(
+      serializedNode,
+    );
+  }
+
+  updateFromJSON(
+    serializedNode: LexicalUpdateJSON<SerializedHeadingNode>,
+  ): this {
+    return super.updateFromJSON(serializedNode).setTag(serializedNode.tag);
   }
 
   exportJSON(): SerializedHeadingNode {
     return {
       ...super.exportJSON(),
       tag: this.getTag(),
-      type: 'heading',
-      version: 1,
     };
   }
 
@@ -435,7 +434,9 @@ function $convertBlockquoteElement(element: HTMLElement): DOMConversionOutput {
   return {node};
 }
 
-export function $createHeadingNode(headingTag: HeadingTagType): HeadingNode {
+export function $createHeadingNode(
+  headingTag: HeadingTagType = 'h1',
+): HeadingNode {
   return $applyNodeReplacement(new HeadingNode(headingTag));
 }
 
@@ -457,13 +458,13 @@ function onPasteForRichText(
         objectKlassEquals(event, InputEvent) ||
         objectKlassEquals(event, KeyboardEvent)
           ? null
-          : (event as ClipboardEvent).clipboardData;
+          : event.clipboardData;
       if (clipboardData != null && selection !== null) {
         $insertDataTransferForRichText(clipboardData, selection, editor);
       }
     },
     {
-      tag: 'paste',
+      tag: PASTE_TAG,
     },
   );
 }
@@ -474,7 +475,7 @@ async function onCutForRichText(
 ): Promise<void> {
   await copyToClipboard(
     editor,
-    objectKlassEquals(event, ClipboardEvent) ? (event as ClipboardEvent) : null,
+    objectKlassEquals(event, ClipboardEvent) ? event : null,
   );
   editor.update(() => {
     const selection = $getSelection();
@@ -494,9 +495,9 @@ export function eventFiles(
 ): [boolean, Array<File>, boolean] {
   let dataTransfer: null | DataTransfer = null;
   if (objectKlassEquals(event, DragEvent)) {
-    dataTransfer = (event as DragEvent).dataTransfer;
+    dataTransfer = event.dataTransfer;
   } else if (objectKlassEquals(event, ClipboardEvent)) {
-    dataTransfer = (event as ClipboardEvent).clipboardData;
+    dataTransfer = event.clipboardData;
   }
 
   if (dataTransfer === null) {
@@ -552,6 +553,27 @@ function $isSelectionAtEndOfRoot(selection: RangeSelection) {
   return focus.key === 'root' && focus.offset === $getRoot().getChildrenSize();
 }
 
+function $isSelectionCollapsedAtFrontOfIndentedBlock(
+  selection: RangeSelection,
+): boolean {
+  if (!selection.isCollapsed()) {
+    return false;
+  }
+  const {anchor} = selection;
+  if (anchor.offset !== 0) {
+    return false;
+  }
+  const anchorNode = anchor.getNode();
+  if ($isRootNode(anchorNode)) {
+    return false;
+  }
+  const element = $getNearestBlockElementAncestorOrThrow(anchorNode);
+  return (
+    element.getIndent() > 0 &&
+    (element.is(anchorNode) || anchorNode.is(element.getFirstDescendant()))
+  );
+}
+
 /**
  * Resets the capitalization of the selection to default.
  * Called when the user presses space, tab, or enter key.
@@ -577,17 +599,20 @@ export function registerRichText(editor: LexicalEditor): () => void {
         }
         return false;
       },
-      0,
+      COMMAND_PRIORITY_EDITOR,
     ),
     editor.registerCommand<boolean>(
       DELETE_CHARACTER_COMMAND,
       (isBackward) => {
         const selection = $getSelection();
-        if (!$isRangeSelection(selection)) {
-          return false;
+        if ($isRangeSelection(selection)) {
+          selection.deleteCharacter(isBackward);
+          return true;
+        } else if ($isNodeSelection(selection)) {
+          selection.deleteNodes();
+          return true;
         }
-        selection.deleteCharacter(isBackward);
-        return true;
+        return false;
       },
       COMMAND_PRIORITY_EDITOR,
     ),
@@ -738,7 +763,7 @@ export function registerRichText(editor: LexicalEditor): () => void {
         return $handleIndentAndOutdent((block) => {
           const indent = block.getIndent();
           if (indent > 0) {
-            block.setIndent(indent - 1);
+            block.setIndent(Math.max(0, indent - 1));
           }
         });
       },
@@ -748,10 +773,7 @@ export function registerRichText(editor: LexicalEditor): () => void {
       KEY_ARROW_UP_COMMAND,
       (event) => {
         const selection = $getSelection();
-        if (
-          $isNodeSelection(selection) &&
-          !$isTargetWithinDecorator(event.target as HTMLElement)
-        ) {
+        if ($isNodeSelection(selection)) {
           // If selection is on a node, let's try and move selection
           // back to being a range selection.
           const nodes = selection.getNodes();
@@ -840,10 +862,7 @@ export function registerRichText(editor: LexicalEditor): () => void {
       KEY_ARROW_RIGHT_COMMAND,
       (event) => {
         const selection = $getSelection();
-        if (
-          $isNodeSelection(selection) &&
-          !$isTargetWithinDecorator(event.target as HTMLElement)
-        ) {
+        if ($isNodeSelection(selection)) {
           // If selection is on a node, let's try and move selection
           // back to being a range selection.
           const nodes = selection.getNodes();
@@ -873,28 +892,17 @@ export function registerRichText(editor: LexicalEditor): () => void {
           return false;
         }
         const selection = $getSelection();
-        if (!$isRangeSelection(selection)) {
-          return false;
-        }
-
-        const {anchor} = selection;
-        const anchorNode = anchor.getNode();
-
-        if (
-          selection.isCollapsed() &&
-          anchor.offset === 0 &&
-          !$isRootNode(anchorNode)
-        ) {
-          const element = $getNearestBlockElementAncestorOrThrow(anchorNode);
-          if (element.getIndent() > 0) {
+        if ($isRangeSelection(selection)) {
+          if ($isSelectionCollapsedAtFrontOfIndentedBlock(selection)) {
             event.preventDefault();
             return editor.dispatchCommand(OUTDENT_CONTENT_COMMAND, undefined);
           }
-        }
-
-        // Exception handling for iOS native behavior instead of Lexical's behavior when using Korean on iOS devices.
-        // more details - https://github.com/facebook/lexical/issues/5841
-        if (IS_IOS && navigator.language === 'ko-KR') {
+          // Exception handling for iOS native behavior instead of Lexical's behavior when using Korean on iOS devices.
+          // more details - https://github.com/facebook/lexical/issues/5841
+          if (IS_IOS && navigator.language === 'ko-KR') {
+            return false;
+          }
+        } else if (!$isNodeSelection(selection)) {
           return false;
         }
         event.preventDefault();
@@ -910,7 +918,7 @@ export function registerRichText(editor: LexicalEditor): () => void {
           return false;
         }
         const selection = $getSelection();
-        if (!$isRangeSelection(selection)) {
+        if (!($isRangeSelection(selection) || $isNodeSelection(selection))) {
           return false;
         }
         event.preventDefault();
@@ -1053,9 +1061,7 @@ export function registerRichText(editor: LexicalEditor): () => void {
       (event) => {
         copyToClipboard(
           editor,
-          objectKlassEquals(event, ClipboardEvent)
-            ? (event as ClipboardEvent)
-            : null,
+          objectKlassEquals(event, ClipboardEvent) ? event : null,
         );
         return true;
       },

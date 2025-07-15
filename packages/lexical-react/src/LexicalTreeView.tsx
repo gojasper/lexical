@@ -7,6 +7,7 @@
  */
 
 import type {EditorState, LexicalEditor} from 'lexical';
+import type {JSX} from 'react';
 
 import {
   CustomPrintNodeFn,
@@ -121,6 +122,7 @@ export function TreeView({
         return generateContent(editor, commandsLog, exportDOM, customPrintNode);
       }}
       ref={treeElementRef}
+      commandsLog={commandsLog}
     />
   );
 }

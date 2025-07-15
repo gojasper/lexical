@@ -6,6 +6,7 @@
  *
  */
 import type {MenuRenderFn, MenuResolution} from './shared/LexicalMenu';
+import type {JSX} from 'react';
 
 import {useLexicalComposerContext} from '@lexical/react/LexicalComposerContext';
 import {calculateZoomLevel} from '@lexical/utils';
@@ -58,6 +59,9 @@ export type LexicalContextMenuPluginProps<TOption extends MenuOption> = {
 
 const PRE_PORTAL_DIV_SIZE = 1;
 
+/**
+ * @deprecated Use LexicalNodeContextMenuPlugin instead.
+ */
 export function LexicalContextMenuPlugin<TOption extends MenuOption>({
   options,
   onWillOpen,

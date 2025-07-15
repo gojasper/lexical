@@ -45,8 +45,12 @@ React wrapper for `@lexical/plain-text` that adds major features for plain text 
 
 ```jsx
 <PlainTextPlugin
-  contentEditable={<ContentEditable />}
-  placeholder={<div>Enter some text...</div>}
+  contentEditable={
+    <ContentEditable
+      aria-placeholder={'Enter some text...'}
+      placeholder={<div>Enter some text...</div>}
+    />
+  }
   ErrorBoundary={LexicalErrorBoundary}
 />
 ```
@@ -57,8 +61,12 @@ React wrapper for `@lexical/rich-text` that adds major features for rich text ed
 
 ```jsx
 <RichTextPlugin
-  contentEditable={<ContentEditable />}
-  placeholder={<div>Enter some text...</div>}
+  contentEditable={
+    <ContentEditable
+      aria-placeholder={'Enter some text...'}
+      placeholder={<div>Enter some text...</div>}
+    />
+  }
   ErrorBoundary={LexicalErrorBoundary}
 />
 ```
@@ -123,7 +131,7 @@ Plugin that allows tab indentation in combination with `@lexical/rich-text`.
 
 ### `LexicalAutoLinkPlugin`
 
-Plugin will convert text into links based on passed matchers list. In example below whenever user types url-like string it will automaticaly convert it into a link node
+Plugin will convert text into links based on passed matchers list. In example below whenever user types url-like string it will automatically convert it into a link node
 
 ```jsx
 const URL_MATCHER =

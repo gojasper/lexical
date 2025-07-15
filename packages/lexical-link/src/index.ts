@@ -13,6 +13,7 @@ import type {
   EditorConfig,
   LexicalCommand,
   LexicalNode,
+  LexicalUpdateJSON,
   NodeKey,
   Point,
   RangeSelection,
@@ -28,6 +29,7 @@ import {
   $applyNodeReplacement,
   $getSelection,
   $isElementNode,
+  $isNodeSelection,
   $isRangeSelection,
   $normalizeSelection__EXPERIMENTAL,
   $setSelection,
@@ -87,7 +89,11 @@ export class LinkNode extends ElementNode {
     );
   }
 
-  constructor(url: string, attributes: LinkAttributes = {}, key?: NodeKey) {
+  constructor(
+    url: string = '',
+    attributes: LinkAttributes = {},
+    key?: NodeKey,
+  ) {
     super(key);
     const {target = null, rel = null, title = null} = attributes;
     this.__url = url;
@@ -98,18 +104,32 @@ export class LinkNode extends ElementNode {
 
   createDOM(config: EditorConfig): LinkHTMLElementType {
     const element = document.createElement('a');
-    element.href = this.sanitizeUrl(this.__url);
-    if (this.__target !== null) {
-      element.target = this.__target;
-    }
-    if (this.__rel !== null) {
-      element.rel = this.__rel;
-    }
-    if (this.__title !== null) {
-      element.title = this.__title;
-    }
+    this.updateLinkDOM(null, element, config);
     addClassNamesToElement(element, config.theme.link);
     return element;
+  }
+
+  updateLinkDOM(
+    prevNode: this | null,
+    anchor: LinkHTMLElementType,
+    config: EditorConfig,
+  ) {
+    if (isHTMLAnchorElement(anchor)) {
+      if (!prevNode || prevNode.__url !== this.__url) {
+        anchor.href = this.sanitizeUrl(this.__url);
+      }
+      for (const attr of ['target', 'rel', 'title'] as const) {
+        const key = `__${attr}` as const;
+        const value = this[key];
+        if (!prevNode || prevNode[key] !== value) {
+          if (value) {
+            anchor[attr] = value;
+          } else {
+            anchor.removeAttribute(attr);
+          }
+        }
+      }
+    }
   }
 
   updateDOM(
@@ -117,39 +137,7 @@ export class LinkNode extends ElementNode {
     anchor: LinkHTMLElementType,
     config: EditorConfig,
   ): boolean {
-    if (isHTMLAnchorElement(anchor)) {
-      const url = this.__url;
-      const target = this.__target;
-      const rel = this.__rel;
-      const title = this.__title;
-      if (url !== prevNode.__url) {
-        anchor.href = url;
-      }
-
-      if (target !== prevNode.__target) {
-        if (target) {
-          anchor.target = target;
-        } else {
-          anchor.removeAttribute('target');
-        }
-      }
-
-      if (rel !== prevNode.__rel) {
-        if (rel) {
-          anchor.rel = rel;
-        } else {
-          anchor.removeAttribute('rel');
-        }
-      }
-
-      if (title !== prevNode.__title) {
-        if (title) {
-          anchor.title = title;
-        } else {
-          anchor.removeAttribute('title');
-        }
-      }
-    }
+    this.updateLinkDOM(prevNode, anchor, config);
     return false;
   }
 
@@ -162,23 +150,23 @@ export class LinkNode extends ElementNode {
     };
   }
 
-  static importJSON(
-    serializedNode: SerializedLinkNode | SerializedAutoLinkNode,
-  ): LinkNode {
-    const node = $createLinkNode(serializedNode.url, {
-      rel: serializedNode.rel,
-      target: serializedNode.target,
-      title: serializedNode.title,
-    });
-    node.setFormat(serializedNode.format);
-    node.setIndent(serializedNode.indent);
-    node.setDirection(serializedNode.direction);
-    return node;
+  static importJSON(serializedNode: SerializedLinkNode): LinkNode {
+    return $createLinkNode().updateFromJSON(serializedNode);
+  }
+
+  updateFromJSON(serializedNode: LexicalUpdateJSON<SerializedLinkNode>): this {
+    return super
+      .updateFromJSON(serializedNode)
+      .setURL(serializedNode.url)
+      .setRel(serializedNode.rel || null)
+      .setTarget(serializedNode.target || null)
+      .setTitle(serializedNode.title || null);
   }
 
   sanitizeUrl(url: string): string {
+    url = formatUrl(url);
     try {
-      const parsedUrl = new URL(url);
+      const parsedUrl = new URL(formatUrl(url));
       // eslint-disable-next-line no-script-url
       if (!SUPPORTED_URL_PROTOCOLS.has(parsedUrl.protocol)) {
         return 'about:blank';
@@ -195,9 +183,7 @@ export class LinkNode extends ElementNode {
       rel: this.getRel(),
       target: this.getTarget(),
       title: this.getTitle(),
-      type: 'link',
       url: this.getURL(),
-      version: 1,
     };
   }
 
@@ -205,36 +191,40 @@ export class LinkNode extends ElementNode {
     return this.getLatest().__url;
   }
 
-  setURL(url: string): void {
+  setURL(url: string): this {
     const writable = this.getWritable();
     writable.__url = url;
+    return writable;
   }
 
   getTarget(): null | string {
     return this.getLatest().__target;
   }
 
-  setTarget(target: null | string): void {
+  setTarget(target: null | string): this {
     const writable = this.getWritable();
     writable.__target = target;
+    return writable;
   }
 
   getRel(): null | string {
     return this.getLatest().__rel;
   }
 
-  setRel(rel: null | string): void {
+  setRel(rel: null | string): this {
     const writable = this.getWritable();
     writable.__rel = rel;
+    return writable;
   }
 
   getTitle(): null | string {
     return this.getLatest().__title;
   }
 
-  setTitle(title: null | string): void {
+  setTitle(title: null | string): this {
     const writable = this.getWritable();
     writable.__title = title;
+    return writable;
   }
 
   insertNewAfter(
@@ -318,7 +308,7 @@ function $convertAnchorElement(domNode: Node): DOMConversionOutput {
  * @returns The LinkNode.
  */
 export function $createLinkNode(
-  url: string,
+  url: string = '',
   attributes?: LinkAttributes,
 ): LinkNode {
   return $applyNodeReplacement(new LinkNode(url, attributes));
@@ -349,7 +339,11 @@ export class AutoLinkNode extends LinkNode {
   /** Indicates whether the autolink was ever unlinked. **/
   __isUnlinked: boolean;
 
-  constructor(url: string, attributes: AutoLinkAttributes = {}, key?: NodeKey) {
+  constructor(
+    url: string = '',
+    attributes: AutoLinkAttributes = {},
+    key?: NodeKey,
+  ) {
     super(url, attributes, key);
     this.__isUnlinked =
       attributes.isUnlinked !== undefined && attributes.isUnlinked !== null
@@ -378,7 +372,7 @@ export class AutoLinkNode extends LinkNode {
     return this.__isUnlinked;
   }
 
-  setIsUnlinked(value: boolean) {
+  setIsUnlinked(value: boolean): this {
     const self = this.getWritable();
     self.__isUnlinked = value;
     return self;
@@ -404,16 +398,15 @@ export class AutoLinkNode extends LinkNode {
   }
 
   static importJSON(serializedNode: SerializedAutoLinkNode): AutoLinkNode {
-    const node = $createAutoLinkNode(serializedNode.url, {
-      isUnlinked: serializedNode.isUnlinked,
-      rel: serializedNode.rel,
-      target: serializedNode.target,
-      title: serializedNode.title,
-    });
-    node.setFormat(serializedNode.format);
-    node.setIndent(serializedNode.indent);
-    node.setDirection(serializedNode.direction);
-    return node;
+    return $createAutoLinkNode().updateFromJSON(serializedNode);
+  }
+
+  updateFromJSON(
+    serializedNode: LexicalUpdateJSON<SerializedAutoLinkNode>,
+  ): this {
+    return super
+      .updateFromJSON(serializedNode)
+      .setIsUnlinked(serializedNode.isUnlinked || false);
   }
 
   static importDOM(): null {
@@ -425,8 +418,6 @@ export class AutoLinkNode extends LinkNode {
     return {
       ...super.exportJSON(),
       isUnlinked: this.__isUnlinked,
-      type: 'autolink',
-      version: 1,
     };
   }
 
@@ -460,7 +451,7 @@ export class AutoLinkNode extends LinkNode {
  * @returns The LinkNode.
  */
 export function $createAutoLinkNode(
-  url: string,
+  url: string = '',
   attributes?: AutoLinkAttributes,
 ): AutoLinkNode {
   return $applyNodeReplacement(new AutoLinkNode(url, attributes));
@@ -555,9 +546,60 @@ export function $toggleLink(
   const rel = attributes.rel === undefined ? 'noreferrer' : attributes.rel;
   const selection = $getSelection();
 
-  if (!$isRangeSelection(selection)) {
+  if (
+    selection === null ||
+    (!$isRangeSelection(selection) && !$isNodeSelection(selection))
+  ) {
     return;
   }
+
+  if ($isNodeSelection(selection)) {
+    const nodes = selection.getNodes();
+    if (nodes.length === 0) {
+      return;
+    }
+
+    // Handle all selected nodes
+    nodes.forEach((node) => {
+      if (url === null) {
+        // Remove link
+        const linkParent = $findMatchingParent(
+          node,
+          (parent): parent is LinkNode =>
+            !$isAutoLinkNode(parent) && $isLinkNode(parent),
+        );
+        if (linkParent) {
+          linkParent.insertBefore(node);
+          if (linkParent.getChildren().length === 0) {
+            linkParent.remove();
+          }
+        }
+      } else {
+        // Add/Update link
+        const existingLink = $findMatchingParent(
+          node,
+          (parent): parent is LinkNode =>
+            !$isAutoLinkNode(parent) && $isLinkNode(parent),
+        );
+        if (existingLink) {
+          existingLink.setURL(url);
+          if (target !== undefined) {
+            existingLink.setTarget(target);
+          }
+          if (rel !== undefined) {
+            existingLink.setRel(rel);
+          }
+        } else {
+          const linkNode = $createLinkNode(url, {rel, target});
+          node.insertBefore(linkNode);
+          linkNode.append(node);
+        }
+      }
+    });
+    return;
+  }
+
+  // Handle RangeSelection
   const nodes = selection.extract();
 
   if (url === null) {
@@ -668,4 +710,38 @@ function $getAncestor<NodeType extends LexicalNode = LexicalNode>(
     parent = parent.getParentOrThrow();
   }
   return predicate(parent) ? parent : null;
+}
+
+const PHONE_NUMBER_REGEX = /^\+?[0-9\s()-]{5,}$/;
+
+/**
+ * Formats a URL string by adding appropriate protocol if missing
+ *
+ * @param url - URL to format
+ * @returns Formatted URL with appropriate protocol
+ */
+export function formatUrl(url: string): string {
+  // Check if URL already has a protocol
+  if (url.match(/^[a-z][a-z0-9+.-]*:/i)) {
+    // URL already has a protocol, leave it as is
+    return url;
+  }
+  // Check if it's a relative path (starting with '/', '.', or '#')
+  else if (url.match(/^[/#.]/)) {
+    // Relative path, leave it as is
+    return url;
+  }
+
+  // Check for email address
+  else if (url.includes('@')) {
+    return `mailto:${url}`;
+  }
+
+  // Check for phone number
+  else if (PHONE_NUMBER_REGEX.test(url)) {
+    return `tel:${url}`;
+  }
+
+  // For everything else, return with https:// prefix
+  return `https://${url}`;
 }
