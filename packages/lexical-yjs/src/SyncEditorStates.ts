@@ -183,6 +183,7 @@ export function syncYjsChangesToLexical(
       }
     },
     {
+      discrete: true,
       onUpdate: () => {
         syncCursorPositionsFn(binding, provider);
         // If there was a collision on the top level paragraph
