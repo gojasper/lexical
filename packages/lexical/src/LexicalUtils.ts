@@ -30,12 +30,12 @@ import type {RootNode} from './nodes/LexicalRootNode';
 import {CAN_USE_DOM} from 'shared/canUseDOM';
 import {IS_APPLE, IS_APPLE_WEBKIT, IS_IOS, IS_SAFARI} from 'shared/environment';
 import invariant from 'shared/invariant';
-import normalizeClassNames from 'shared/normalizeClassNames';
 
 import {
   $createTextNode,
   $getPreviousSelection,
   $getSelection,
+  $getTextNodeOffset,
   $isDecoratorNode,
   $isElementNode,
   $isLineBreakNode,
@@ -47,6 +47,7 @@ import {
   ElementNode,
   HISTORY_MERGE_TAG,
   LineBreakNode,
+  normalizeClassNames,
   UpdateTag,
 } from '.';
 import {
@@ -64,6 +65,8 @@ import {
 import {LexicalEditor} from './LexicalEditor';
 import {flushRootMutations} from './LexicalMutations';
 import {
+  $isEphemeral,
+  $markEphemeral,
   LexicalNode,
   type LexicalPrivateDOM,
   type NodeKey,
@@ -132,6 +135,7 @@ export function getRegisteredNode(
 
 export const isArray = Array.isArray;
 
+/** @internal */
 export const scheduleMicroTask: (fn: () => void) => void =
   typeof queueMicrotask === 'function'
     ? queueMicrotask
@@ -177,7 +181,7 @@ export function isSelectionWithinEditor(
       !isSelectionCapturedInDecoratorInput(anchorDOM) &&
       getNearestEditorFromDOMNode(anchorDOM) === editor
     );
-  } catch (error) {
+  } catch (_error) {
     return false;
   }
 }
@@ -444,6 +448,12 @@ export function removeFromParent(node: LexicalNode): void {
 // the cloning heuristic. Instead use node.getWritable().
 export function internalMarkNodeAsDirty(node: LexicalNode): void {
   errorOnInfiniteTransforms();
+  invariant(
+    !$isEphemeral(node),
+    'internalMarkNodeAsDirty: Ephemeral nodes must not be marked as dirty (key %s type %s)',
+    node.__key,
+    node.__type,
+  );
   const latest = node.getLatest();
   const parent = latest.__parent;
   const editorState = getActiveEditorState();
@@ -656,13 +666,6 @@ export function $getNodeFromDOM(dom: Node): null | LexicalNode {
   return $getNodeByKey(nodeKey);
 }
 
-export function getTextNodeOffset(
-  node: TextNode,
-  moveSelectionToEnd: boolean,
-): number {
-  return moveSelectionToEnd ? node.getTextContentSize() : 0;
-}
-
 function getNodeKeyFromDOMTree(
   // Note that node here refers to a DOM Node, not an Lexical Node
   dom: Node,
@@ -824,7 +827,7 @@ export function $updateTextNodeFromDOMContent(
         anchorOffset === null ||
         focusOffset === null
       ) {
-        node.setTextContent(normalizedTextContent);
+        $setTextContentWithSelection(node, normalizedTextContent, selection);
         return;
       }
       selection.setTextNodeRange(node, anchorOffset, node, focusOffset);
@@ -835,7 +838,24 @@ export function $updateTextNodeFromDOMContent(
         node.replace(replacement);
         node = replacement;
       }
-      node.setTextContent(normalizedTextContent);
+      $setTextContentWithSelection(node, normalizedTextContent, selection);
+    }
+  }
+}
+
+function $setTextContentWithSelection(
+  node: TextNode,
+  textContent: string,
+  selection: BaseSelection | null,
+) {
+  node.setTextContent(textContent);
+  if ($isRangeSelection(selection)) {
+    const key = node.getKey();
+    for (const k of ['anchor', 'focus'] as const) {
+      const pt = selection[k];
+      if (pt.type === 'text' && pt.key === key) {
+        pt.offset = $getTextNodeOffset(node, pt.offset, 'clamp');
+      }
     }
   }
 }
@@ -1292,12 +1312,6 @@ export function dispatchCommand<TCommand extends LexicalCommand<unknown>>(
   return triggerCommandListeners(editor, command, payload);
 }
 
-export function $textContentRequiresDoubleLinebreakAtEnd(
-  node: ElementNode,
-): boolean {
-  return !$isRootNode(node) && !node.isLastChild() && !node.isInline();
-}
-
 export function getElementByKeyOrThrow(
   editor: LexicalEditor,
   key: NodeKey,
@@ -1329,8 +1343,8 @@ export function getDOMOwnerDocument(
   return isDOMDocumentNode(target)
     ? target
     : isHTMLElement(target)
-    ? target.ownerDocument
-    : null;
+      ? target.ownerDocument
+      : null;
 }
 
 export function scrollIntoViewIfNeeded(
@@ -1753,23 +1767,6 @@ export function $splitNode(
   return [leftTree, rightTree];
 }
 
-export function $findMatchingParent(
-  startingNode: LexicalNode,
-  findFn: (node: LexicalNode) => boolean,
-): LexicalNode | null {
-  let curr: ElementNode | LexicalNode | null = startingNode;
-
-  while (curr !== $getRoot() && curr != null) {
-    if (findFn(curr)) {
-      return curr;
-    }
-
-    curr = curr.getParent();
-  }
-
-  return null;
-}
-
 /**
  * @param x - The element being tested
  * @returns Returns true if x is an HTML anchor tag, false otherwise
@@ -1866,17 +1863,6 @@ export function INTERNAL_$isBlock(
   return !node.isInline() && node.canBeEmpty() !== false && isLeafElement;
 }
 
-export function $getAncestor<NodeType extends LexicalNode = LexicalNode>(
-  node: LexicalNode,
-  predicate: (ancestor: LexicalNode) => ancestor is NodeType,
-): NodeType | null {
-  let parent = node;
-  while (parent !== null && parent.getParent() !== null && !predicate(parent)) {
-    parent = parent.getParentOrThrow();
-  }
-  return predicate(parent) ? parent : null;
-}
-
 /**
  * Utility function for accessing current active editor instance.
  * @returns Current active editor
@@ -1967,6 +1953,24 @@ export function $cloneWithProperties<T extends LexicalNode>(latestNode: T): T {
   return mutableNode;
 }
 
+/**
+ * Returns a clone with {@link $cloneWithProperties} and then "detaches"
+ * it from the state by overriding its getLatest and getWritable to always
+ * return this. This node can not be added to an EditorState or become the
+ * parent, child, or sibling of another node. It is primarily only useful
+ * for making in-place temporary modifications to a TextNode when
+ * serializing a partial slice.
+ *
+ * Does not mutate the EditorState.
+ * @param latestNode - The node to be cloned.
+ * @returns The clone of the node.
+ */
+export function $cloneWithPropertiesEphemeral<T extends LexicalNode>(
+  latestNode: T,
+): T {
+  return $markEphemeral($cloneWithProperties(latestNode));
+}
+
 export function setNodeIndentFromDOM(
   elementDom: HTMLElement,
   elementNode: ElementNode,
@@ -2025,6 +2029,29 @@ export function hasOwnExportDOM(klass: Klass<LexicalNode>) {
 
 /** @internal */
 function isAbstractNodeClass(klass: Klass<LexicalNode>): boolean {
+  if (!(klass === LexicalNode || klass.prototype instanceof LexicalNode)) {
+    let ownNodeType = '<unknown>';
+    let version = '<unknown>';
+    try {
+      ownNodeType = klass.getType();
+    } catch (_err) {
+      // ignore
+    }
+    try {
+      if (LexicalEditor.version) {
+        version = JSON.parse(LexicalEditor.version);
+      }
+    } catch (_err) {
+      // ignore
+    }
+    invariant(
+      false,
+      '%s (type %s) does not subclass LexicalNode from the lexical package used by this editor (version %s). All lexical and @lexical/* packages used by an editor must have identical versions. If you suspect the version does match, then the problem may be caused by multiple copies of the same lexical module (e.g. both esm and cjs, or included directly in multiple entrypoints).',
+      klass.name,
+      ownNodeType,
+      version,
+    );
+  }
   return (
     klass === DecoratorNode || klass === ElementNode || klass === LexicalNode
   );
@@ -2130,3 +2157,37 @@ export function $create<T extends LexicalNode>(klass: Klass<T>): T {
   );
   return new registeredNode.klass() as T;
 }
+
+/**
+ * Starts with a node and moves up the tree (toward the root node) to find a matching node based on
+ * the search parameters of the findFn. (Consider JavaScripts' .find() function where a testing function must be
+ * passed as an argument. eg. if( (node) => node.__type === 'div') ) return true; otherwise return false
+ * @param startingNode - The node where the search starts.
+ * @param findFn - A testing function that returns true if the current node satisfies the testing parameters.
+ * @returns `startingNode` or one of its ancestors that matches the `findFn` predicate and is not the `RootNode`, or `null` if no match was found.
+ */
+export const $findMatchingParent: {
+  <T extends LexicalNode>(
+    startingNode: LexicalNode,
+    findFn: (node: LexicalNode) => node is T,
+  ): T | null;
+  (
+    startingNode: LexicalNode,
+    findFn: (node: LexicalNode) => boolean,
+  ): LexicalNode | null;
+} = (
+  startingNode: LexicalNode,
+  findFn: (node: LexicalNode) => boolean,
+): LexicalNode | null => {
+  let curr: ElementNode | LexicalNode | null = startingNode;
+
+  while (curr != null && !$isRootNode(curr)) {
+    if (findFn(curr)) {
+      return curr;
+    }
+
+    curr = curr.getParent();
+  }
+
+  return null;
+};

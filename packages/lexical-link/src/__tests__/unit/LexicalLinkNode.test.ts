@@ -15,10 +15,12 @@ import {
   SerializedLinkNode,
 } from '@lexical/link';
 import {$createMarkNode, $isMarkNode} from '@lexical/mark';
+import {$createHeadingNode} from '@lexical/rich-text';
 import {
   $createLineBreakNode,
   $createParagraphNode,
   $createTextNode,
+  $getNodeByKey,
   $getRoot,
   $getSelection,
   $isLineBreakNode,
@@ -30,6 +32,7 @@ import {
   SerializedParagraphNode,
 } from 'lexical';
 import {initializeUnitTest} from 'lexical/src/__tests__/utils';
+import {describe, expect, it, test} from 'vitest';
 
 const editorConfig = Object.freeze({
   namespace: '',
@@ -523,6 +526,57 @@ describe('LexicalLinkNode tests', () => {
       });
     });
 
+    test('$toggleLink correctly removes link when link contains heading', async () => {
+      // This tests the structure: link > heading > text
+      const {editor} = testEnv;
+      await editor.update(() => {
+        const paragraph = $createParagraphNode();
+        const linkNode = $createLinkNode('https://example.com/foo');
+        const headingNode = $createHeadingNode('h3');
+        const textNode = $createTextNode('Example Link');
+
+        headingNode.append(textNode);
+        linkNode.append(headingNode);
+        paragraph.append(linkNode);
+        $getRoot().append(paragraph);
+      });
+
+      // Verify initial structure: paragraph > link > heading > text
+      editor.read(() => {
+        const paragraph = $getRoot().getFirstChild() as ParagraphNode;
+        const linkNode = paragraph.getFirstChild();
+
+        expect($isLinkNode(linkNode)).toBe(true);
+        if ($isLinkNode(linkNode)) {
+          expect(linkNode.getURL()).toBe('https://example.com/foo');
+          const headingNode = linkNode.getFirstChild();
+          expect(headingNode?.getType()).toBe('heading');
+          expect(headingNode?.getTextContent()).toBe('Example Link');
+        }
+      });
+
+      // Select all and remove link
+      await editor.update(() => {
+        $selectAll();
+        $toggleLink(null);
+      });
+
+      // Verify structure after link removal: paragraph > heading > text
+      editor.read(() => {
+        const paragraph = $getRoot().getFirstChild() as ParagraphNode;
+        const children = paragraph.getChildren();
+
+        // Link should be removed, heading should be moved up to paragraph level
+        expect(children.length).toBe(1);
+        const headingNode = children[0];
+        expect(headingNode.getType()).toBe('heading');
+        expect(headingNode.getTextContent()).toBe('Example Link');
+
+        // Verify no link nodes remain
+        expect($isLinkNode(headingNode)).toBe(false);
+      });
+    });
+
     test('$toggleLink adds link with embedded LineBreakNode', async () => {
       const {editor} = testEnv;
       await editor.update(() => {
@@ -579,6 +633,190 @@ describe('LexicalLinkNode tests', () => {
         const [textNode, lineBreakNode] = children;
         expect($isTextNode(textNode)).toBe(true);
         expect($isLineBreakNode(lineBreakNode)).toBe(true);
+      });
+    });
+
+    test('$toggleLink removes link from trailing space only', async () => {
+      const {editor} = testEnv;
+      let textNodeKey: string;
+
+      // Create a link with text and a trailing space
+      await editor.update(() => {
+        const paragraph = $createParagraphNode();
+        const textNode = $createTextNode('hello ');
+        textNodeKey = textNode.getKey();
+        const linkNode = $createLinkNode('https://example.com');
+        linkNode.append(textNode);
+        paragraph.append(linkNode);
+        $getRoot().clear().append(paragraph);
+      });
+
+      // Verify initial structure
+      editor.read(() => {
+        const paragraph = $getRoot().getFirstChild() as ParagraphNode;
+        const linkNode = paragraph.getFirstChild();
+        expect($isLinkNode(linkNode)).toBe(true);
+        if ($isLinkNode(linkNode)) {
+          expect(linkNode.getTextContent()).toBe('hello ');
+        }
+      });
+
+      // Select only the trailing space and remove the link from it
+      await editor.update(() => {
+        const textNode = $getNodeByKey(textNodeKey);
+        if ($isTextNode(textNode)) {
+          textNode.select(5, 6); // Select the trailing space
+          $toggleLink(null);
+        }
+      });
+
+      // Verify that the link was removed only from the space
+      editor.read(() => {
+        const paragraph = $getRoot().getFirstChild() as ParagraphNode;
+        const children = paragraph.getChildren();
+
+        // Should have two children: linkNode with 'hello' and a text node with ' '
+        expect(children.length).toBe(2);
+
+        const [linkNode, spaceNode] = children;
+
+        // First child should still be a link containing 'hello'
+        expect($isLinkNode(linkNode)).toBe(true);
+        if ($isLinkNode(linkNode)) {
+          expect(linkNode.getTextContent()).toBe('hello');
+          expect(linkNode.getURL()).toBe('https://example.com');
+        }
+
+        // Second child should be a text node with just the space
+        expect($isTextNode(spaceNode)).toBe(true);
+        if ($isTextNode(spaceNode)) {
+          expect(spaceNode.getTextContent()).toBe(' ');
+        }
+      });
+    });
+
+    test('$toggleLink removes link from leading space only', async () => {
+      const {editor} = testEnv;
+      let textNodeKey: string;
+
+      // Create a link with a leading space and text
+      await editor.update(() => {
+        const paragraph = $createParagraphNode();
+        const textNode = $createTextNode(' hello');
+        textNodeKey = textNode.getKey();
+        const linkNode = $createLinkNode('https://example.com');
+        linkNode.append(textNode);
+        paragraph.append(linkNode);
+        $getRoot().clear().append(paragraph);
+      });
+
+      // Verify initial structure
+      editor.read(() => {
+        const paragraph = $getRoot().getFirstChild() as ParagraphNode;
+        const linkNode = paragraph.getFirstChild();
+        expect($isLinkNode(linkNode)).toBe(true);
+        if ($isLinkNode(linkNode)) {
+          expect(linkNode.getTextContent()).toBe(' hello');
+        }
+      });
+
+      // Select only the leading space and remove the link from it
+      await editor.update(() => {
+        const textNode = $getNodeByKey(textNodeKey);
+        if ($isTextNode(textNode)) {
+          textNode.select(0, 1); // Select the leading space
+          $toggleLink(null);
+        }
+      });
+
+      // Verify that the link was removed only from the space
+      editor.read(() => {
+        const paragraph = $getRoot().getFirstChild() as ParagraphNode;
+        const children = paragraph.getChildren();
+
+        // Should have two children: a text node with ' ' and linkNode with 'hello'
+        expect(children.length).toBe(2);
+
+        const [spaceNode, linkNode] = children;
+
+        // First child should be a text node with just the space
+        expect($isTextNode(spaceNode)).toBe(true);
+        if ($isTextNode(spaceNode)) {
+          expect(spaceNode.getTextContent()).toBe(' ');
+        }
+
+        // Second child should still be a link containing 'hello'
+        expect($isLinkNode(linkNode)).toBe(true);
+        if ($isLinkNode(linkNode)) {
+          expect(linkNode.getTextContent()).toBe('hello');
+          expect(linkNode.getURL()).toBe('https://example.com');
+        }
+      });
+    });
+
+    test('$toggleLink removes link from middle word only, preserving surrounding spaces', async () => {
+      const {editor} = testEnv;
+      let textNodeKey: string;
+
+      // Create a link with leading space, text, and trailing space
+      await editor.update(() => {
+        const paragraph = $createParagraphNode();
+        const textNode = $createTextNode(' hello ');
+        textNodeKey = textNode.getKey();
+        const linkNode = $createLinkNode('https://example.com');
+        linkNode.append(textNode);
+        paragraph.append(linkNode);
+        $getRoot().clear().append(paragraph);
+      });
+
+      // Verify initial structure
+      editor.read(() => {
+        const paragraph = $getRoot().getFirstChild() as ParagraphNode;
+        const linkNode = paragraph.getFirstChild();
+        expect($isLinkNode(linkNode)).toBe(true);
+        if ($isLinkNode(linkNode)) {
+          expect(linkNode.getTextContent()).toBe(' hello ');
+        }
+      });
+
+      // Select only 'hello' (without spaces) and remove the link from it
+      await editor.update(() => {
+        const textNode = $getNodeByKey(textNodeKey);
+        if ($isTextNode(textNode)) {
+          textNode.select(1, 6); // Select 'hello'
+          $toggleLink(null);
+        }
+      });
+
+      // Verify that the link was removed only from 'hello'
+      editor.read(() => {
+        const paragraph = $getRoot().getFirstChild() as ParagraphNode;
+        const children = paragraph.getChildren();
+
+        // Should have three children: link with ' ', text with 'hello', link with ' '
+        expect(children.length).toBe(3);
+
+        const [leadingSpaceLink, middleText, trailingSpaceLink] = children;
+
+        // First child should be a link with leading space
+        expect($isLinkNode(leadingSpaceLink)).toBe(true);
+        if ($isLinkNode(leadingSpaceLink)) {
+          expect(leadingSpaceLink.getTextContent()).toBe(' ');
+          expect(leadingSpaceLink.getURL()).toBe('https://example.com');
+        }
+
+        // Middle child should be plain text 'hello'
+        expect($isTextNode(middleText)).toBe(true);
+        if ($isTextNode(middleText)) {
+          expect(middleText.getTextContent()).toBe('hello');
+        }
+
+        // Third child should be a link with trailing space
+        expect($isLinkNode(trailingSpaceLink)).toBe(true);
+        if ($isLinkNode(trailingSpaceLink)) {
+          expect(trailingSpaceLink.getTextContent()).toBe(' ');
+          expect(trailingSpaceLink.getURL()).toBe('https://example.com');
+        }
       });
     });
   });
