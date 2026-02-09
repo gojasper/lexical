@@ -164,6 +164,7 @@ export function syncYjsChangesToLexical(
       }
     },
     {
+      discrete: true,
       onUpdate: () => {
         syncCursorPositionsFn(binding, provider);
         editor.update(() => $ensureEditorNotEmpty());
